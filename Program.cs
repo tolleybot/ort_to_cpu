@@ -9,13 +9,29 @@ using ILGPU;
 using ILGPU.Runtime;
 using ILGPU.Runtime.Cuda;
 
+
+/*
+ * Example: Using ONNX Runtime with CUDA for Inference with Pre-Allocated GPU Memory
+ * 
+ * This example demonstrates how to use ONNX Runtime with CUDA for running an inference session, where the input is provided
+ * as a raw float array (CPU memory), and the output tensor is pre-allocated in GPU memory using `cudaMalloc`.
+ * 
+ * Key Highlights:
+ * 1. **GPU Memory Allocation**: The program uses `cudaMalloc` to allocate memory for the output tensor directly on the GPU.
+ * 2. **Input Tensor**: The input tensor is passed from CPU memory using a float array, wrapped as an `OrtValue` using the method `OrtValue.CreateTensorValueFromMemory`.
+ * 3. **Output Tensor**: The output tensor is created from pre-allocated GPU memory using `OrtValue.CreateTensorValueWithData`, which allows ONNX Runtime to write the inference results directly to GPU memory.
+ * 4. **Inference**: The ONNX Runtime session runs using the `Run` method, which takes the input and output `OrtValue` collections and processes the inference on the model.
+ * 5. **Copying Output from GPU to CPU**: After inference, `cudaMemcpy` is used to copy the output tensor from GPU memory back to CPU memory for display or further processing.
+ * 
+ * This example is ideal for scenarios where you need to pre-allocate memory for performance reasons or have custom memory handling (e.g., in high-performance GPU-based applications).
+ */
+
 class Program
 {
-    // Define the required data types
     public enum cudaError : int
     {
         cudaSuccess = 0,
-        // ... other error codes ...
+        // ... other error codes can go here ...
     }
 
     public enum cudaMemcpyKind : int
@@ -53,6 +69,8 @@ class Program
 
         // Bind input data
         var inputTensor = new DenseTensor<float>(input, new int[] { 4 });
+        OrtValue inputValue = OrtValue.CreateTensorValueFromMemory<float>(
+            OrtMemoryInfo.DefaultInstance, inputTensor.Buffer, new long[] { 4 });
  
         // Create OrtMemoryInfo for CUDA (GPU) memory
         using var ortMemoryInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
@@ -66,16 +84,12 @@ class Program
             sizeof(float) * 4                        // Total buffer size in bytes (4 floats)
         );
 
-        // Prepare input and output containers for the inference session
-        var inputs = new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor<float>("input_name", inputTensor)  // Replace "input_name" with the actual input name in your model
-        };
 
+        var inputNames = session.InputMetadata.Keys.ToArray();
         var outputNames = session.OutputMetadata.Keys.ToArray();
 
         // Run the inference session, using the pre-allocated GPU memory for output
-        session.Run(inputs, outputNames, new List<OrtValue> { outputValue });
+        session.Run(null, inputNames, new List<OrtValue> { inputValue }, outputNames, new List<OrtValue> { outputValue });
 
         // At this point, the inference has completed, and the results will be in `devicePtr`
         // If needed, copy the output back to the host (CPU)
