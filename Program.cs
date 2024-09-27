@@ -46,6 +46,8 @@ class Program
     public static extern cudaError cudaMalloc(out IntPtr devPtr, int size);
     [DllImport("cudart", EntryPoint = "cudaMemcpy")]
     public static extern cudaError cudaMemcpy(float[] dst, IntPtr src, int size, cudaMemcpyKind kind);
+    [DllImport("cudart", EntryPoint = "cudaFree")]
+    public static extern int cudaFree(IntPtr devPtr);
 
     static void Main(string[] args)
     {
@@ -102,5 +104,7 @@ class Program
         {
             Console.WriteLine(value);
         }
+        
+        cudaFree(devicePtr);
     }
 }
