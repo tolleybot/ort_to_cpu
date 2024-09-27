@@ -1,18 +1,47 @@
-﻿using Microsoft.ML.OnnxRuntime;
+﻿using System;
+using System.Linq;
+using System.Runtime.InteropServices;
+
+using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using System;
+
 using ILGPU;
 using ILGPU.Runtime;
 using ILGPU.Runtime.Cuda;
-using System.Linq;
 
 class Program
 {
+    // Define the required data types
+    public enum cudaError : int
+    {
+        cudaSuccess = 0,
+        // ... other error codes ...
+    }
+
+    public enum cudaMemcpyKind : int
+    {
+        cudaMemcpyHostToDevice = 1,
+        cudaMemcpyDeviceToHost = 2,
+        cudaMemcpyDeviceToDevice = 3,
+        cudaMemcpyDefault = 4
+    }
+
+    [DllImport("cudart", EntryPoint = "cudaMalloc")]
+    public static extern cudaError cudaMalloc(out IntPtr devPtr, int size);
+
     static void Main(string[] args)
     {
         // Initialize session with CUDA execution provider
         var sessionOptions = new SessionOptions();
         sessionOptions.AppendExecutionProvider_CUDA(0);  // Use GPU 0
+
+        // Pointer to GPU memory for output
+        IntPtr devicePtr; 
+        cudaError cudaResult = cudaMalloc(out devicePtr, 4 * sizeof(float));
+        if (cudaResult != cudaError.cudaSuccess)
+        {
+            Console.WriteLine("Failed to allocate device memory: {0}", cudaResult);        
+        }
 
         using var session = new InferenceSession("model.onnx", sessionOptions);
 
@@ -29,10 +58,16 @@ class Program
 
         // Bind input
         binding.BindInput("input", inputValue);
+
+        long[] outputShape = { 4 };
+        int outputSizeInBytes = 4 * sizeof(float);
+        OrtMemoryInfo memInfo = new OrtMemoryInfo
+        ("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
+        OrtExternalAllocation externalAllocation = new OrtExternalAllocation(memInfo, outputShape, TensorElementType.Float, devicePtr, outputSizeInBytes);
   
         // Allocate output on GPU and bind it
-        var alloc = new OrtMemoryInfo(OrtMemoryInfo.allocatorCUDA,
-            OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
+        // var alloc = new OrtMemoryInfo(OrtMemoryInfo.allocatorCUDA,
+        //     OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
 
         // long[] ouptutShape = { 4 }; 
         // OrtValue tensorValue = OrtValue.CreateTensorValueWithData(memInfo,
@@ -40,13 +75,17 @@ class Program
         //                                                         ouptutShape, devicePtr,
         //                                                         xLength * sizeof(float));
 
-        binding.BindOutputToDevice("output", alloc);
+        binding.BindOutputToDevice("output", externalAllocation);
 
         // Run inference
         session.RunWithBinding(new RunOptions(), binding);
 
         // Retrieve output
         var outputs = binding.GetOutputValues();
+
+        using OrtValue result = outputs.First();
+
+        var outputData = result.GetTensorDataAsSpan<float>();
 
         // Assuming the first output is the one we need
         using OrtValue outputValue = outputs[0];
