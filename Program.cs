@@ -28,6 +28,8 @@ class Program
 
     [DllImport("cudart", EntryPoint = "cudaMalloc")]
     public static extern cudaError cudaMalloc(out IntPtr devPtr, int size);
+    [DllImport("cudart", EntryPoint = "cudaMemcpy")]
+    public static extern cudaError cudaMemcpy(float[] dst, IntPtr src, int size, cudaMemcpyKind kind);
 
     static void Main(string[] args)
     {
@@ -40,84 +42,51 @@ class Program
         cudaError cudaResult = cudaMalloc(out devicePtr, 4 * sizeof(float));
         if (cudaResult != cudaError.cudaSuccess)
         {
-            Console.WriteLine("Failed to allocate device memory: {0}", cudaResult);        
+            Console.WriteLine("Failed to allocate device memory: {0}", cudaResult);
+            return;
         }
 
         using var session = new InferenceSession("model.onnx", sessionOptions);
 
         // Create input data (for example, a float array)
         var input = new float[4] { 1.0f, 2.0f, 3.0f, 4.0f };
-        
+
         // Bind input data
         var inputTensor = new DenseTensor<float>(input, new int[] { 4 });
-        var inputValue = OrtValue.CreateTensorValueFromMemory<float>(
-            OrtMemoryInfo.DefaultInstance, inputTensor.Buffer, new long[] { 4 });
+ 
+        // Create OrtMemoryInfo for CUDA (GPU) memory
+        using var ortMemoryInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
 
-        // Create input/output bindings
-        var binding = session.CreateIoBinding();
+        // Create an OrtValue from the GPU memory (output tensor) using CreateTensorValueWithData
+        using var outputValue = OrtValue.CreateTensorValueWithData(
+            ortMemoryInfo,                           // Memory info for GPU
+            TensorElementType.Float,                 // Tensor element type
+            new long[] { 4 },                        // Tensor shape (4 elements)
+            devicePtr,                               // Pointer to the GPU memory
+            sizeof(float) * 4                        // Total buffer size in bytes (4 floats)
+        );
 
-        // Bind input
-        binding.BindInput("input", inputValue);
+        // Prepare input and output containers for the inference session
+        var inputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor<float>("input_name", inputTensor)  // Replace "input_name" with the actual input name in your model
+        };
 
-        long[] outputShape = { 4 };
-        int outputSizeInBytes = 4 * sizeof(float);
-        OrtMemoryInfo memInfo = new OrtMemoryInfo
-        ("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
-        OrtExternalAllocation externalAllocation = new OrtExternalAllocation(memInfo, outputShape, TensorElementType.Float, devicePtr, outputSizeInBytes);
-  
-        // Allocate output on GPU and bind it
-        // var alloc = new OrtMemoryInfo(OrtMemoryInfo.allocatorCUDA,
-        //     OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
+        var outputNames = session.OutputMetadata.Keys.ToArray();
 
-        // long[] ouptutShape = { 4 }; 
-        // OrtValue tensorValue = OrtValue.CreateTensorValueWithData(memInfo,
-        //                                                         TensorElementType.Float,
-        //                                                         ouptutShape, devicePtr,
-        //                                                         xLength * sizeof(float));
+        // Run the inference session, using the pre-allocated GPU memory for output
+        session.Run(inputs, outputNames, new List<OrtValue> { outputValue });
 
-        binding.BindOutputToDevice("output", externalAllocation);
-
-        // Run inference
-        session.RunWithBinding(new RunOptions(), binding);
-
-        // Retrieve output
-        var outputs = binding.GetOutputValues();
-
-        using OrtValue result = outputs.First();
-
-        var outputData = result.GetTensorDataAsSpan<float>();
-
-        // Assuming the first output is the one we need
-        using OrtValue outputValue = outputs[0];
-
-        // Now we need to copy the data from GPU to CPU using ILGPU
-     //   float[] cpuData = CopyFromGpuToCpuWithILGPU(outputValue, 4);
-
-        // Print the copied data
-       // Console.WriteLine("Data copied to CPU: " + string.Join(", ", cpuData));
+        // At this point, the inference has completed, and the results will be in `devicePtr`
+        // If needed, copy the output back to the host (CPU)
+        float[] outputData = new float[4];  // Allocate a buffer to hold the output
+        cudaMemcpy(outputData, devicePtr, 4 * sizeof(float), cudaMemcpyKind.cudaMemcpyDeviceToHost);
+        
+        // Print the output values
+        Console.WriteLine("Inference output:");
+        foreach (var value in outputData)
+        {
+            Console.WriteLine(value);
+        }
     }
-
-    // ILGPU function to copy data from GPU to CPU
-
-    // public static float[] CopyFromGpuToCpuWithILGPU(OrtValue outputValue, int dataSize)
-    // {
-    //     // Retrieve GPU memory pointer
-    //     IntPtr gpuPointer = outputValue.TensorDataPointer;
-
-    //     // Initialize ILGPU context and CUDA accelerator
-    //     using var context = Context.CreateDefault();
-    //     using var accelerator = new CudaAccelerator(context);
-
-    //     // Allocate a buffer on the CPU
-    //     float[] cpuData = new float[dataSize];
-
-    //     // Wrap the GPU pointer in a MemoryBuffer using ILGPU interop
-    //     var deviceBuffer = accelerator.LoadFromPointer<float>(gpuPointer, dataSize);
-
-    //     // Copy data from the GPU to CPU
-    //     deviceBuffer.CopyTo(cpuData, 0, 0, dataSize);
-
-    //     // Return the data copied to CPU
-    //     return cpuData;
-    // }
 }
